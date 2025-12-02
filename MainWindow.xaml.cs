@@ -150,7 +150,7 @@ namespace WPF_Kred_calc
 
     public class SQLiteDatabase
     {
-        readonly static string sql_tec_kat = System.Environment.CurrentDirectory + @"\LocalDB_WPF_Kred_calc.db";
+        readonly static string sql_tec_kat = System.Environment.CurrentDirectory + @"\SQLite_WPF_Kred_calc.db";
         readonly static string connetionString = @"Data Source=" + sql_tec_kat + ";";
         SqliteConnection connection;
 
