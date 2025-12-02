@@ -1,24 +1,24 @@
-﻿using System;
+﻿using LiteDB;
+using Microsoft.Data.Sqlite;
+using Microsoft.Win32;
+using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Data;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Text.RegularExpressions;
-using System.IO;
 using System.Xml;
 using static System.Math;
-using System.Collections.ObjectModel;
-using System.Globalization;
-using System.Diagnostics;
-using Microsoft.Win32;
-using System.Text.Json;
-using System.Linq;
-using System.Net.Http;
-using System.Threading.Tasks;
-using System.Data;
-using Microsoft.Data.Sqlite;
-using System.Text;
-using Microsoft.Data.SqlClient;
 
 namespace WPF_Kred_calc
 {
@@ -26,7 +26,16 @@ namespace WPF_Kred_calc
     {
         public double RATE { get; set; }
         public double FORC { get; set; } = 1;
-        public string CURR_CODE { get; set; }        
+        public string CURR_CODE { get; set; }
+    }
+
+    public class Curs
+    {
+        public Guid Id { get; set; }
+        public double RATE { get; set; }
+        public double FORC { get; set; } = 1;
+        public string CURR_CODE { get; set; }
+        public DateTime CURS_DATE { get; set; }
     }
 
     public class TDataGridCol
@@ -43,7 +52,7 @@ namespace WPF_Kred_calc
 
     public class CreateCurrencyList
     {
-        private static List<Currency> currencyList = new();            
+        private static List<Currency> currencyList = [];
         public static List<Currency> ReadList()
         {
             return currencyList;
@@ -54,7 +63,7 @@ namespace WPF_Kred_calc
         }
         public static void ClearList()
         {
-            currencyList = new List<Currency>();
+            currencyList = [];
         }
         public static bool IsExistsList()
         {
@@ -66,10 +75,10 @@ namespace WPF_Kred_calc
     {
         private static readonly HttpClient _httpClient = new();
 
-        public static async Task<byte[]> DownloadFileAsyncByte(string uri)        
+        public static async Task<byte[]> DownloadFileAsyncByte(string uri)
         {
-            byte[] fileBytes = await _httpClient.GetByteArrayAsync(uri);            
-            return fileBytes;            
+            byte[] fileBytes = await _httpClient.GetByteArrayAsync(uri);
+            return fileBytes;
         }
 
         public static async Task<string> DownloadFileAsyncString(string uri)
@@ -81,83 +90,62 @@ namespace WPF_Kred_calc
         public static async Task<string> SetPOSTAsync(string uri, string request, Encoding enc, string content = "application/json")
         {
             // пример enc = Encoding.UTF8
-            var response = await _httpClient.PostAsync(uri, new StringContent(request, enc , content));            
+            var response = await _httpClient.PostAsync(uri, new StringContent(request, enc, content));
             return response.ToString();
         }
     }
 
-    public class SQLDatabase
+    public class LiteDBDatabase
     {
-        readonly static string sql_tec_kat = System.Environment.CurrentDirectory + @"\LocalDB_WPF_Kred_calc.mdf";
-        readonly static string connetionString = @"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename=" + sql_tec_kat + "; Integrated Security=True";
-        SqlConnection connection;
-
-        public double ReadDatabase(DateTime p_kurs_date , string p_curr_code)
+        readonly static string sql_tec_kat = System.Environment.CurrentDirectory + @"\LiteDB_WPF_Kred_calc.db";
+        public LiteDBDatabase()
         {
-            if (connection.State == ConnectionState.Open)
-            {
-                try
-                {
-                    SqlCommand command = new("select [dbo].[GET_KURS] (@kurs_date, @curr_code)", connection);
-                    command.Parameters.Add("@kurs_date", SqlDbType.Date);
-                    command.Parameters["@kurs_date"].Value = p_kurs_date;
-                    command.Parameters.Add("@curr_code", SqlDbType.VarChar);
-                    command.Parameters["@curr_code"].Value = p_curr_code;
+            using var db = new LiteDatabase(sql_tec_kat);
+            var collection = db.GetCollection<Curs>("kurs");
 
-                    var rezult = command.ExecuteScalar();
-                    if (Convert.IsDBNull(rezult))
-                        return -1;
-                    
-                    command.Dispose();
-                    return (double)rezult;                                        
-                }
-                catch
-                {
-                    return -1;
-                }
-            }
-            return -1;
+            // Добавляем уникальный составной индекс (для предотвращения дубликатов)
+            collection.EnsureIndex("CURR_CODE_DATE_UNIQUE", "$.CURR_CODE + '|' + $.CURS_DATE", true);
+
+            // Индексы для ускорения поиска по отдельным полям
+            collection.EnsureIndex(x => x.CURR_CODE);
+            collection.EnsureIndex(x => x.CURS_DATE);
         }
 
-        public void WriteDatabase(DateTime p_kurs_date, string p_curr_code, double p_rate, double p_forc)
+        public static double ReadDatabase(DateTime p_kurs_date, string p_curr_code)
         {
-            if (connection.State == ConnectionState.Open)
-            {
-                SqlCommand command = new("exec [dbo].[SET_KURS] @kurs_date, @curr_code, @rate, @forc;", connection);
-                command.Parameters.Add("@kurs_date", SqlDbType.Date);
-                command.Parameters["@kurs_date"].Value = p_kurs_date;
-                command.Parameters.Add("@curr_code", SqlDbType.VarChar);
-                command.Parameters["@curr_code"].Value = p_curr_code;
-                command.Parameters.Add("@rate", SqlDbType.Money);
-                command.Parameters["@rate"].Value = p_rate;
-                command.Parameters.Add("@forc", SqlDbType.Int);
-                command.Parameters["@forc"].Value = p_forc;
-
-                command.ExecuteNonQuery();                    
-                command.Dispose();                
-            }            
-        }
-
-        public bool OpenDatabase()
-        {                         
-            connection = new(connetionString);
             try
             {
-                if (connection.State != ConnectionState.Open)
-                    connection.Open();
-                return true;
+                // открывает базу данных, если ее нет - то создает
+                using var db = new LiteDatabase(sql_tec_kat);
+                // Получаем коллекцию
+                var collection = db.GetCollection<Curs>("kurs");
+
+                var results = collection.Find(x => x.CURR_CODE == p_curr_code && x.CURS_DATE == p_kurs_date);
+                List<Curs> list = [.. results];
+
+                return list.Select(x => Round(x.RATE / x.FORC, 3)).OfType<double?>().FirstOrDefault() ?? -1.00;
             }
             catch
             {
-                return false;
+                return -1;
             }
         }
 
-        public void CloseDatabase()
+        public static void WriteDatabase(DateTime p_kurs_date, string p_curr_code, double p_rate, double p_forc)
         {
-            if (connection.State != ConnectionState.Closed)
-                connection.Close();
-        }    
+            // открывает базу данных, если ее нет - то создает
+            using var db = new LiteDatabase(sql_tec_kat);
+            // Получаем коллекцию
+            var collection = db.GetCollection<Curs>("kurs");
+
+            var results = collection.Find(x => x.CURR_CODE == p_curr_code && x.CURS_DATE == p_kurs_date);
+            List<Curs> list = [.. results];
+
+            if (list.Count == 0)
+            {
+                collection.Insert(new Curs { RATE = p_rate, FORC = p_forc, CURR_CODE = p_curr_code, CURS_DATE = p_kurs_date });
+            }
+        }
     }
 
     public class SQLiteDatabase
@@ -166,13 +154,13 @@ namespace WPF_Kred_calc
         readonly static string connetionString = @"Data Source=" + sql_tec_kat + ";";
         SqliteConnection connection;
 
-        public SQLiteDatabase() 
+        public SQLiteDatabase()
         {
             SqliteCommand Command;
             string commandText;
 
             OpenDatabase(); // открыть соединение
-            
+
             // создать таблицу, если её нет
             commandText = "CREATE TABLE IF NOT EXISTS KURS ( ID INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
                                                             "KURS_DATE INTEGER NOT NULL, " +
@@ -180,7 +168,7 @@ namespace WPF_Kred_calc
                                                             "RATE REAL NOT NULL CHECK(RATE > 0), " +
                                                             "FORC INTEGER NOT NULL CHECK(FORC > 0)" +
                                                             ")";
-            Command = new SqliteCommand(commandText, connection);            
+            Command = new SqliteCommand(commandText, connection);
             Command.ExecuteNonQuery(); // выполнить запрос
 
             // создать индекс, если его нет
@@ -189,7 +177,7 @@ namespace WPF_Kred_calc
             Command.ExecuteNonQuery(); // выполнить запрос
 
             CloseDatabase(); // закрыть соединение
-        }        
+        }
 
         public double ReadDatabase(DateTime p_kurs_date, string p_curr_code)
         {
@@ -207,7 +195,7 @@ namespace WPF_Kred_calc
                     if (Convert.IsDBNull(rezult))
                         return -1;
 
-                    command.Dispose();                 
+                    command.Dispose();
                     return (double)rezult;
                 }
                 catch
@@ -263,13 +251,13 @@ namespace WPF_Kred_calc
     /// Interaction logic for MainWindow.xaml
     /// </summary>
     public partial class MainWindow : Window
-    {        
+    {
         static String[] file_path_ini_mas, type_ini_mas;
         static Boolean is_program_loading = true;
         static readonly String tec_kat = System.Environment.CurrentDirectory;
         static readonly String tec_kat_ini = tec_kat + Path.DirectorySeparatorChar + "ini" + Path.DirectorySeparatorChar;
         static readonly String tec_kat_temp = tec_kat + Path.DirectorySeparatorChar + "temp";
-        public ObservableCollection<string> list = new();
+        public ObservableCollection<string> list = [];
 
         public MainWindow()
         {
@@ -313,8 +301,17 @@ namespace WPF_Kred_calc
             DataGrid1.Items.Clear();
             for (int i = 0; i <= 50; i++)
             {
-                DataGrid1.Items.Add(new TDataGridCol { TDate = "", TDolg = "", TPlatInt = "", TPlat = "",
-                    TPereplata = "", TPlatDop = "", TItogo = "", TColorType = "" });
+                DataGrid1.Items.Add(new TDataGridCol
+                {
+                    TDate = "",
+                    TDolg = "",
+                    TPlatInt = "",
+                    TPlat = "",
+                    TPereplata = "",
+                    TPlatDop = "",
+                    TItogo = "",
+                    TColorType = ""
+                });
             }
         }
 
@@ -322,7 +319,7 @@ namespace WPF_Kred_calc
         private void TextBox_PreviewTextInput_Float(object sender, TextCompositionEventArgs e)
         {
             string inputSymbol = e.Text.ToString(); // можно вводить цифры и точку
-            if (!RegexFloat().Match(inputSymbol).Success)
+            if (!RegexFloat().IsMatch(inputSymbol))
             {
                 e.Handled = true;
             }
@@ -330,7 +327,7 @@ namespace WPF_Kred_calc
         private void TextBox_PreviewTextInput_Int(object sender, TextCompositionEventArgs e)
         {
             string inputSymbol = e.Text.ToString(); // можно вводить цифры
-            if (!RegexInt().Match(inputSymbol).Success)
+            if (!RegexInt().IsMatch(inputSymbol))
             {
                 e.Handled = true;
             }
@@ -500,7 +497,7 @@ namespace WPF_Kred_calc
             else
             {
                 m_sum_cred = String_to_Double(this.summa_ekv.Text) - String_to_Double(this.perv_vznos.Text);
-                this.proc_perv_vznos.Text = Double_to_String(100.0 * String_to_Double(this.perv_vznos.Text) / String_to_Double(this.summa_ekv.Text), midpoint:7);
+                this.proc_perv_vznos.Text = Double_to_String(100.0 * String_to_Double(this.perv_vznos.Text) / String_to_Double(this.summa_ekv.Text), midpoint: 7);
             }
             if (m_sum_cred < 0) { m_sum_cred = 0; }
             this.sum_kred.Text = Double_to_String(m_sum_cred);
@@ -509,8 +506,8 @@ namespace WPF_Kred_calc
         // Получить курс НБУ
         public static double GetKursNbu(String mCurrCode, DateTime mDate)
         {
-            String settings_data_format = "xml"; String settings_file_name = "";  String settings_url = "";
-            String settings_char_curr_code = ""; String settings_char_kurs = "";  String settings_database = "";
+            String settings_data_format = "xml"; String settings_file_name = ""; String settings_url = "";
+            String settings_char_curr_code = ""; String settings_char_kurs = ""; String settings_database = "";
             String settings_char_forc = ""; String settings_char_format_date = "";
             String mPath = tec_kat_temp;
             String mPathOut;
@@ -526,7 +523,7 @@ namespace WPF_Kred_calc
                               let KURS = Round(t.RATE / t.FORC, 3)
                               where t.CURR_CODE == '1' + mCurrCode
                               select new { KURS }
-                              ).Sum(t => t.KURS);*/                                
+                              ).Sum(t => t.KURS);*/
                 /*foreach (Currency u in CreateCurrencyList.ReadList())
                 {
                     if (u.KURS_CODE == mCurrCode)
@@ -573,13 +570,11 @@ namespace WPF_Kred_calc
                 return 1;
             }
 
-            if (settings_database == "mssql")
+            if (settings_database == "litedb")
             {
-                // чтение с локальной базы данных MS SQL
-                SQLDatabase db_read = new();
-                db_read.OpenDatabase();
-                double rezult_db = db_read.ReadDatabase(mDate, mCurrCode);
-                db_read.CloseDatabase();
+                // чтение с локальной базы данных LiteDB
+                LiteDBDatabase db_read = new();
+                double rezult_db = LiteDBDatabase.ReadDatabase(mDate, mCurrCode);
                 if (rezult_db != -1) return rezult_db;
             }
             else if (settings_database == "sqlite")
@@ -590,7 +585,7 @@ namespace WPF_Kred_calc
                 double rezult_db = db_read.ReadDatabase(mDate, mCurrCode);
                 db_read.CloseDatabase();
                 if (rezult_db != -1) return rezult_db;
-            }                
+            }
 
             // если папка не существует, создаем
             DirectoryInfo dirInfo = new(mPath);
@@ -599,7 +594,7 @@ namespace WPF_Kred_calc
                 dirInfo.Create();
             }
 
-            mPathOut = mPath + "\\" + settings_file_name  + mDate.ToString("yyyyMMdd") + "." + settings_data_format;
+            mPathOut = mPath + "\\" + settings_file_name + mDate.ToString("yyyyMMdd") + "." + settings_data_format;
             FileInfo fileInf = new(mPathOut);
 
             // Если нет файла взять его с сайта
@@ -622,7 +617,7 @@ namespace WPF_Kred_calc
                         fstream.Write(array, 0, array.Length);
                     }
                     */
-                    var responce = Task.Run(() => HttpHelper.DownloadFileAsyncByte(settings_url)).Result;                     
+                    var responce = Task.Run(() => HttpHelper.DownloadFileAsyncByte(settings_url)).Result;
                     // запись в файл
                     using (FileStream fstream = new(mPathOut, FileMode.OpenOrCreate))
                     {
@@ -630,7 +625,7 @@ namespace WPF_Kred_calc
                         //byte[] array = System.Text.Encoding.Default.GetBytes(responce);
                         byte[] array = responce;
                         // запись массива байтов в файл
-                        fstream.Write(array, 0, array.Length);                        
+                        fstream.Write(array, 0, array.Length);
                     }
 
                     // перечитать созданный файл
@@ -643,7 +638,7 @@ namespace WPF_Kred_calc
                 }
             }
 
-            if (fileInf.Exists && settings_data_format == "xml") 
+            if (fileInf.Exists && settings_data_format == "xml")
             {
                 try
                 {
@@ -651,18 +646,17 @@ namespace WPF_Kred_calc
                     XmlDocument xDoc = new();
                     xDoc.Load(mPathOut);
                     XmlElement xRoot = xDoc.DocumentElement;
-                    List<Currency> currencyList = new();
-                    SQLDatabase db_write = null;
+                    List<Currency> currencyList = [];
+                    LiteDBDatabase db_write = null;
                     SQLiteDatabase db_write_sqlite = null;
 
-                    if (settings_database == "mssql")
+                    if (settings_database == "litedb")
                     {
-                        db_write = new(); // инициализация - запись в локальную базу данных MS SQL
-                        db_write.OpenDatabase();
+                        db_write = new(); // инициализация - запись в локальную базу данных LiteDB                        
                     }
                     else if (settings_database == "sqlite")
                     {
-                        db_write_sqlite = new(); // инициализация - запись в локальную базу данных MS SQL
+                        db_write_sqlite = new(); // инициализация - запись в локальную базу данных SQLite
                         db_write_sqlite.OpenDatabase();
                     }
 
@@ -674,13 +668,13 @@ namespace WPF_Kred_calc
                         {
                             if (childnode.Name == settings_char_kurs) { currency.RATE = String_to_Double(childnode.InnerText); }
                             else if (childnode.Name == settings_char_forc) { currency.FORC = String_to_Double(childnode.InnerText); }
-                            else if (childnode.Name == settings_char_curr_code) { currency.CURR_CODE = childnode.InnerText; }                            
+                            else if (childnode.Name == settings_char_curr_code) { currency.CURR_CODE = childnode.InnerText; }
                             currencyList.Add(currency);
                         }
-                        if (settings_database == "mssql")
+                        if (settings_database == "litedb")
                         {
-                            // запись в локальную базу данных MS SQL                                                
-                            db_write.WriteDatabase(mDate, currency.CURR_CODE, currency.RATE, currency.FORC);
+                            // запись в локальную базу данных LiteDB
+                            LiteDBDatabase.WriteDatabase(mDate, currency.CURR_CODE, currency.RATE, currency.FORC);
                         }
                         else if (settings_database == "sqlite")
                         {
@@ -689,9 +683,8 @@ namespace WPF_Kred_calc
                         }
                     }
 
-                    if (settings_database == "mssql")
+                    if (settings_database == "litedb")
                     {
-                        db_write.CloseDatabase();
                     }
                     else if (settings_database == "sqlite")
                     {
@@ -717,7 +710,7 @@ namespace WPF_Kred_calc
                     return 1;
                 }
             }
-            
+
             if (fileInf.Exists && settings_data_format == "json")
             {
                 try
@@ -736,18 +729,17 @@ namespace WPF_Kred_calc
 
                     JsonDocument document = JsonDocument.Parse(JsonFile);
                     JsonElement root = document.RootElement;
-                    List<Currency> currencyList = new();
-                    SQLDatabase db_write = null;
+                    List<Currency> currencyList = [];
+                    LiteDBDatabase db_write = null;
                     SQLiteDatabase db_write_sqlite = null;
 
-                    if (settings_database == "mssql")
+                    if (settings_database == "litedb")
                     {
-                        db_write = new(); // инициализация - запись в локальную базу данных MS SQL
-                        db_write.OpenDatabase();
+                        db_write = new(); // инициализация - запись в локальную базу данных LiteDB                        
                     }
                     else if (settings_database == "sqlite")
                     {
-                        db_write_sqlite = new(); // инициализация - запись в локальную базу данных MS SQL
+                        db_write_sqlite = new(); // инициализация - запись в локальную базу данных SQLite
                         db_write_sqlite.OpenDatabase();
                     }
 
@@ -768,10 +760,10 @@ namespace WPF_Kred_calc
                         }
                         currencyList.Add(currency);
 
-                        if (settings_database == "mssql")
+                        if (settings_database == "litedb")
                         {
                             // запись в локальную базу данных MS SQL                                                
-                            db_write.WriteDatabase(mDate, currency.CURR_CODE, currency.RATE, currency.FORC);
+                            LiteDBDatabase.WriteDatabase(mDate, currency.CURR_CODE, currency.RATE, currency.FORC);
                         }
                         else if (settings_database == "sqlite")
                         {
@@ -780,9 +772,8 @@ namespace WPF_Kred_calc
                         }
                     }
 
-                    if (settings_database == "mssql")
+                    if (settings_database == "litedb")
                     {
-                        db_write.CloseDatabase();
                     }
                     else if (settings_database == "sqlite")
                     {
@@ -793,7 +784,7 @@ namespace WPF_Kred_calc
                     // LINQ расширение
                     return currencyList
                               .Where(t => t.CURR_CODE == mCurrCode)
-                              .Select(t => Round(t.RATE / t.FORC, 3)).OfType<double?>().FirstOrDefault() ?? 1.00;                    
+                              .Select(t => Round(t.RATE / t.FORC, 3)).OfType<double?>().FirstOrDefault() ?? 1.00;
                     /*foreach (Currency u in currencyList)
                     {
                         if (u.CURR_CODE == mCurrCode)
@@ -806,9 +797,9 @@ namespace WPF_Kred_calc
                 {
                     MessageBoxError("Ошибка !!! не найден курс !!!" + "\n" + "СС=" + "\n" + mCurrCode + "\n" + "Message=" + "\n" + e.Message);
                     return 1;
-                }               
+                }
             }
-            
+
             return 1;
         }
 
@@ -819,7 +810,7 @@ namespace WPF_Kred_calc
             DirectoryInfo dirInfo = new(tec_kat_ini);
             if (dirInfo.Exists)
             {
-                FileInfo[] listOfFiles = dirInfo.GetFiles("*.xml");                
+                FileInfo[] listOfFiles = dirInfo.GetFiles("*.xml");
                 type_ini_mas = new String[listOfFiles.Length];
                 file_path_ini_mas = new String[listOfFiles.Length];
                 int ii = 0;
@@ -835,14 +826,14 @@ namespace WPF_Kred_calc
                             file_path_ini_mas[ii] = file.FullName;
                             XmlDocument xDoc = new();
                             xDoc.Load(file.FullName);
-                            foreach (XmlNode node in xDoc.DocumentElement.ChildNodes)                                
+                            foreach (XmlNode node in xDoc.DocumentElement.ChildNodes)
                             {
                                 if (node.Name == "global")
                                 {
-                                  type_ini_mas[ii] = node.SelectSingleNode("./type").InnerText;
-                                  list.Add(node.SelectSingleNode("./name").InnerText);                                
-                                }                                
-                            }                                                                           
+                                    type_ini_mas[ii] = node.SelectSingleNode("./type").InnerText;
+                                    list.Add(node.SelectSingleNode("./name").InnerText);
+                                }
+                            }
                         }
                         catch (Exception e)
                         {
@@ -866,15 +857,16 @@ namespace WPF_Kred_calc
         public void Read_xml_file_kred_calc()
         {
             // если нет шаблонов xml для загрузки
-            if (this.type_rasch.SelectedIndex == -1) {
-                MessageBoxError("Ошибка не найдены файлы шаблоны в папке !!!" + "\n" + tec_kat_ini);                
+            if (this.type_rasch.SelectedIndex == -1)
+            {
+                MessageBoxError("Ошибка не найдены файлы шаблоны в папке !!!" + "\n" + tec_kat_ini);
                 return;
             }
 
             try
             {
                 // чтение XML файла
-                XmlDocument xDoc = new();                
+                XmlDocument xDoc = new();
                 xDoc.Load(file_path_ini_mas[this.type_rasch.SelectedIndex]);
                 foreach (XmlNode node in xDoc.DocumentElement.ChildNodes)
                 {
@@ -899,7 +891,7 @@ namespace WPF_Kred_calc
                         this.priv_proc_stavka.Text = node.SelectSingleNode("./priv_proc_stavka").InnerText;
                         this.priv_srok_kred.Text = node.SelectSingleNode("./priv_srok").InnerText;
                         //
-                        var temp = node.SelectSingleNode("./priv_proc_stavka2");                        
+                        var temp = node.SelectSingleNode("./priv_proc_stavka2");
                         if (temp != null) { this.priv_proc_stavka2.Text = temp.InnerText; }
                         else { this.priv_proc_stavka2.Text = ""; }
                         //
@@ -923,7 +915,7 @@ namespace WPF_Kred_calc
                         // Первоначальный взнос
                         if (this.perv_vznos.Text == "") this.check_recalc.IsChecked = false;
                         else this.check_recalc.IsChecked = true;
-                        Calc_perv_vznos((Boolean) this.check_recalc.IsChecked);
+                        Calc_perv_vznos((Boolean)this.check_recalc.IsChecked);
                         //
                         string m_type_proc = node.SelectSingleNode("./type_proc").InnerText;
                         if (m_type_proc == "" || m_type_proc == "K") this.type_proc.SelectedIndex = 0;
@@ -986,14 +978,14 @@ namespace WPF_Kred_calc
 
                 // Расчет суммы кредита
                 Calc_sum_cred();
-                
+
                 // расчитываем поля которые в годах
                 this.priv_srok_kred_year.Text = Double_to_String(String_to_Double(this.priv_srok_kred.Text) / 12);
                 this.priv_srok_kred_year2.Text = Double_to_String(String_to_Double(this.priv_srok_kred2.Text) / 12);
                 this.priv_srok_kred_year3.Text = Double_to_String(String_to_Double(this.priv_srok_kred3.Text) / 12);
                 this.srok_kred_year.Text = Double_to_String(String_to_Double(this.srok_kred.Text) / 12);
                 this.srok_kred_year_new.Text = Double_to_String(String_to_Double(this.srok_kred_new.Text) / 12);
-            }            
+            }
             catch (Exception e)
             {
                 MessageBoxError("Ошибка !!!" + "\n" + e.Message);
@@ -1035,7 +1027,7 @@ namespace WPF_Kred_calc
             this.rieltor_itog.Text = Double_to_String(p_calc);
             p_calc_itog += p_calc;
             // итого
-            this.sum_dop_plat.Text = Double_to_String(p_calc_itog);            
+            this.sum_dop_plat.Text = Double_to_String(p_calc_itog);
         }
 
         // Расчет месячных и годовых платежей        
@@ -1149,7 +1141,7 @@ namespace WPF_Kred_calc
 
             ComboBox comboBox = (ComboBox)sender;
             ComboBoxItem selectedItem = (ComboBoxItem)comboBox.SelectedItem;
-            
+
             String m_curr_code = selectedItem.Content.ToString();
             // Расчет и установление курса и расчет эквивалента
             Calc_set_kurs_text(m_curr_code, "");
@@ -1173,13 +1165,13 @@ namespace WPF_Kred_calc
 
         // Нажимаем переключатель расчет по сумме/%
         private void Check_recalcClick(object sender, RoutedEventArgs e)
-        { 
+        {
             if (is_program_loading == true) { return; }
 
             CheckBox checkBox = (CheckBox)sender;
 
             // Первоначальный взнос
-            Calc_perv_vznos((Boolean) checkBox.IsChecked);
+            Calc_perv_vznos((Boolean)checkBox.IsChecked);
             // Расчет суммы кредита
             Calc_sum_cred();
         }
@@ -1199,7 +1191,7 @@ namespace WPF_Kred_calc
 
         // вводим данные в поле Период - Обычные условия
         private void Srok_kredTextChanged(object sender, TextChangedEventArgs e)
-        { 
+        {
             if (is_program_loading == true) { return; }
 
             TextBox textBox = (TextBox)sender;
@@ -1267,7 +1259,7 @@ namespace WPF_Kred_calc
         private void Button_updateClick(object sender, RoutedEventArgs e)
         {
             if (is_program_loading == true) { return; }
-            
+
             Read_xml_file_kred_calc();
             Dop_plat();
 
@@ -1275,8 +1267,17 @@ namespace WPF_Kred_calc
             DataGrid1.Items.Clear();
             for (int i = 0; i <= 50; i++)
             {
-                DataGrid1.Items.Add(new TDataGridCol { TDate = "", TDolg = "", TPlatInt = "", TPlat = "",
-                    TPereplata = "", TPlatDop = "", TItogo = "", TColorType = ""});
+                DataGrid1.Items.Add(new TDataGridCol
+                {
+                    TDate = "",
+                    TDolg = "",
+                    TPlatInt = "",
+                    TPlat = "",
+                    TPereplata = "",
+                    TPlatDop = "",
+                    TItogo = "",
+                    TColorType = ""
+                });
             }
         }
 
@@ -1284,7 +1285,7 @@ namespace WPF_Kred_calc
         private void Button_xml_fileClick(object sender, RoutedEventArgs e)
         {
             Process.Start(new ProcessStartInfo(file_path_ini_mas[this.type_rasch.SelectedIndex]) { UseShellExecute = true });
-        }                                                
+        }
 
         // Экспорт в CSV
         private void Button_ExportCSVClick(object sender, RoutedEventArgs e)
@@ -1325,8 +1326,8 @@ namespace WPF_Kred_calc
             sw.Write("TDate;TDolg;TPlatInt;TPlat;TPereplata;TPlatDop;TItogo");
             sw.Write(sw.NewLine);
             foreach (TDataGridCol row in DataGrid1.Items)
-            {   
-                string value = row.TDate.Replace("Итого:","Itogo:").Replace("Переплата:", "Pereplata:") + ";" +
+            {
+                string value = row.TDate.Replace("Итого:", "Itogo:").Replace("Переплата:", "Pereplata:") + ";" +
                                Get_String_Not_Space(row.TDolg) + ";" +
                                Get_String_Not_Space(row.TPlatInt) + ";" +
                                Get_String_Not_Space(row.TPlat) + ";" +
@@ -1386,28 +1387,31 @@ namespace WPF_Kred_calc
                             zc = LastDayOfMonth(this.date_cred.SelectedDate.Value); zn = KolDayOfYear(this.date_cred.SelectedDate.Value); break;
                         default: break;
                     }
-                
+
                 // Льготный период
                 m_priv_proc_stavka = (m_priv_proc_stavka * 0.01 / zn) * zc;
                 m_proc_stavka = (m_proc_stavka * 0.01 / zn) * zc;
                 double m_proc_stavka_buff;
                 // Сумма аннуитетного платежа                    
                 double annuitet, annuitet_priv;
-                if (m_priv_proc_stavka == 0) {
+                if (m_priv_proc_stavka == 0)
+                {
                     annuitet_priv = m_sum_kred / m_srok;
-                } else {
+                }
+                else
+                {
                     annuitet_priv = (m_priv_proc_stavka / (1.00 - Math.Pow(1.00 + m_priv_proc_stavka, -m_srok))) * m_sum_kred;
                 }
 
                 // Переплата по кредиту
                 double sum_pereplata = 0;
-                double m_sum_plat = String_to_Double(this.sum_plat.Text);                   
+                double m_sum_plat = String_to_Double(this.sum_plat.Text);
                 double summ_calc_pereplata = m_sum_kred;
-                double summ_itog_pereplata = 0;                    
+                double summ_itog_pereplata = 0;
                 //
                 double summ = m_sum_kred;
                 DateTime d_date = this.date_cred.SelectedDate.Value;
-                double summ_pro;                
+                double summ_pro;
                 double summ_dop = 0;
                 double summ_calc_pro = 0;
                 double summ_plat = 0;
@@ -1420,28 +1424,37 @@ namespace WPF_Kred_calc
                 for (i = 1; i <= m_srok; i++)
                 {
                     // пересчет аннуитета (без пересчета)
-                    if (i == m_priv_srok + 1 && this.check_recalc_graf.IsChecked == false) 
-                    {                            
+                    if (i == m_priv_srok + 1 && this.check_recalc_graf.IsChecked == false)
+                    {
                         m_proc_stavka_buff = m_proc_stavka;
-                        if (m_proc_stavka_buff == 0) {
+                        if (m_proc_stavka_buff == 0)
+                        {
                             annuitet = summ / (m_srok - m_priv_srok);
-                        } else {
+                        }
+                        else
+                        {
                             annuitet = (m_proc_stavka_buff / (1.00 - Math.Pow(1.00 + m_proc_stavka_buff, -(m_srok - m_priv_srok)))) * summ;
-                        }                                                        
+                        }
                         summ_pro = summ * m_proc_stavka_buff;
                     }
                     // расчет аннуитета (с пересчетом)
                     if (this.check_recalc_graf.IsChecked == true)
                     {
-                        if (i <= m_priv_srok) {
+                        if (i <= m_priv_srok)
+                        {
                             m_proc_stavka_buff = m_priv_proc_stavka;
-                        } else {
+                        }
+                        else
+                        {
                             m_proc_stavka_buff = m_proc_stavka;
                         }
-                        
-                        if (m_proc_stavka_buff == 0) {
+
+                        if (m_proc_stavka_buff == 0)
+                        {
                             annuitet = summ / (m_srok - i + 1);
-                        } else {
+                        }
+                        else
+                        {
                             annuitet = (m_proc_stavka_buff / (1.00 - Math.Pow(1.00 + m_proc_stavka_buff, -(m_srok - i + 1)))) * summ;
                         }
                         summ_pro = summ * m_proc_stavka_buff;
@@ -1491,15 +1504,18 @@ namespace WPF_Kred_calc
                     summ_itog_pereplata += sum_pereplata;
                     srok_new += 1;
                     //
-                    if (this.check_recalc_graf.IsChecked == false) {
+                    if (this.check_recalc_graf.IsChecked == false)
+                    {
                         summ = summ - annuitet + m_proc_stavka_buff * summ;
-                    } else {
+                    }
+                    else
+                    {
                         summ = summ - annuitet + m_proc_stavka_buff * summ - sum_pereplata;
-                    }                    
-                    summ_pro = summ * m_proc_stavka_buff;                        
-                    summ_dop = summ_dop + m_sum_one + m_sum_year + m_sum_month;                        
+                    }
+                    summ_pro = summ * m_proc_stavka_buff;
+                    summ_dop = summ_dop + m_sum_one + m_sum_year + m_sum_month;
                     m_sum_one = 0;
-                    if (summ < 0) { break; }                        
+                    if (summ < 0) { break; }
 
                     // с учетом переплаты
                     summ_calc_pereplata = summ_calc_pereplata - annuitet - sum_pereplata + m_proc_stavka_buff * summ;
@@ -1572,17 +1588,21 @@ namespace WPF_Kred_calc
                         }
 
                     // льготная
-                    if (i <= m_priv_srok3) {
+                    if (i <= m_priv_srok3)
+                    {
                         pr = summ_graf * m_priv_proc_stavka3 * (zc / zn) / 100;
                     }
-                    else if (i <= (m_priv_srok3 + m_priv_srok2)) {
+                    else if (i <= (m_priv_srok3 + m_priv_srok2))
+                    {
                         pr = summ_graf * m_priv_proc_stavka2 * (zc / zn) / 100;
                     }
-                    else if (i <= (m_priv_srok3 + m_priv_srok2 + m_priv_srok)) {
+                    else if (i <= (m_priv_srok3 + m_priv_srok2 + m_priv_srok))
+                    {
                         pr = summ_graf * m_priv_proc_stavka * (zc / zn) / 100;
                     }
                     // обычная
-                    else {
+                    else
+                    {
                         pr = summ_graf * m_proc_stavka * (zc / zn) / 100;
                     }
 
@@ -1867,21 +1887,21 @@ namespace WPF_Kred_calc
                     if (mass_num[2, i - 1] == 0) { break; }
 
                     int year_int = Convert.ToInt32(mass_date[i - 1][..4]);
-                    if (year_int % 2 == 0)  mTColorType = "MistyRose";
+                    if (year_int % 2 == 0) mTColorType = "MistyRose";
                     else mTColorType = "AliceBlue";
 
                     // добавляем строку                                                
                     DataGrid1.Items.Add(new TDataGridCol
-                        {
-                            TDate = mass_date[i - 1],
-                            TDolg = Double_to_String(mass_num[0, i - 1]),
-                            TPlatInt = Double_to_String(mass_num[1, i - 1]),
-                            TPlat = Double_to_String(mass_num[2, i - 1]),
-                            TPereplata = Double_to_String(mass_num[5, i - 1]),
-                            TPlatDop = Double_to_String(mass_num[3, i - 1]),
-                            TItogo = Double_to_String(mass_num[4, i - 1]),
-                            TColorType = mTColorType
-                        });                    
+                    {
+                        TDate = mass_date[i - 1],
+                        TDolg = Double_to_String(mass_num[0, i - 1]),
+                        TPlatInt = Double_to_String(mass_num[1, i - 1]),
+                        TPlat = Double_to_String(mass_num[2, i - 1]),
+                        TPereplata = Double_to_String(mass_num[5, i - 1]),
+                        TPlatDop = Double_to_String(mass_num[3, i - 1]),
+                        TItogo = Double_to_String(mass_num[4, i - 1]),
+                        TColorType = mTColorType
+                    });
 
                     srok_new += 1;
                 }
